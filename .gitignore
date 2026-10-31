@@ -1,5 +1,6 @@
 # Local Roon pairing tokens and state
 roonstate.json
+**/roonstate.json
 
 # Binaries
 *.exe

@@ -24,8 +24,15 @@ const (
 	svcPairing   = "com.roonlabs.pairing:1"
 	svcPing      = "com.roonlabs.ping:1"
 
-	stateFilePath = "roonstate.json"
+	defaultStateFilePath = "roonstate.json"
 )
+
+func getStateFilePath() string {
+	if p := os.Getenv("ROON_STATE_FILE"); p != "" {
+		return p
+	}
+	return defaultStateFilePath
+}
 
 // EventType identifies live state updates broadcast to connected web clients.
 type EventType string
@@ -128,7 +135,7 @@ func (c *Client) emit(ev Event) {
 
 func (c *Client) loadPersistedState() {
 	c.state.Tokens = make(map[string]string)
-	data, err := os.ReadFile(stateFilePath)
+	data, err := os.ReadFile(getStateFilePath())
 	if err != nil {
 		return
 	}
@@ -144,7 +151,7 @@ func (c *Client) savePersistedState() {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(stateFilePath, data, 0644)
+	_ = os.WriteFile(getStateFilePath(), data, 0644)
 }
 
 func (c *Client) onCoreDiscovered(msg SoodMessage) {

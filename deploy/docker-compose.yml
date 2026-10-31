@@ -1,0 +1,19 @@
+services:
+  webroon:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: ghcr.io/maeck70/webroon:latest
+    container_name: webroon
+    restart: unless-stopped
+    # Note: On Linux hosts, network_mode: host allows SOOD UDP multicast/broadcast (port 9003)
+    # to reach your Roon Core directly on the local LAN subnet.
+    network_mode: host
+    environment:
+      - PORT=8080
+      - ROON_STATE_FILE=/data/roonstate.json
+    volumes:
+      - webroon_data:/data
+
+volumes:
+  webroon_data:
