@@ -4,6 +4,8 @@
 
 It communicates natively with your Roon Core using Roon's **SOOD** (UDP multicast/broadcast discovery on port `9003`) and **MOO/1** (bidirectional RPC over WebSocket) protocols—without requiring Node.js or external bridges.
 
+![WebRoon User Interface](docs/screenshot.png)
+
 ---
 
 ## Features
