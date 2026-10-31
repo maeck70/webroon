@@ -37,8 +37,12 @@ It communicates natively with your Roon Core using Roon's **SOOD** (UDP multicas
 ├── static/styles.css            # Roon dark-mode audiophile theme
 ├── Dockerfile                   # Multi-stage container build (Podman & Docker compatible)
 └── deploy/
-    ├── deploy-container.sh      # Bash script to build & run with Podman or Docker
-    ├── deploy-container.ps1     # PowerShell script to build & run with Podman or Docker
+    ├── deploy-podman.sh         # Bash script to build & run with Podman
+    ├── deploy-podman.ps1        # PowerShell script to build & run with Podman
+    ├── deploy-docker.sh         # Bash script to build & run with Docker
+    ├── deploy-docker.ps1        # PowerShell script to build & run with Docker
+    ├── deploy-container.sh      # Unified Bash script (auto-detects podman/docker)
+    ├── deploy-container.ps1     # Unified PowerShell script (auto-detects podman/docker)
     ├── docker-compose.yml       # Compose file for Docker Compose / podman-compose
     ├── deploy-k8s.sh            # Bash script to deploy to Kubernetes
     ├── deploy-k8s.ps1           # PowerShell script to deploy to Kubernetes
@@ -73,19 +77,28 @@ Then open **[http://localhost:8080](http://localhost:8080)** in your browser.
 
 You can deploy using the helper scripts in `deploy/`, which auto-detect `podman` or `docker`, build the image, create a persistent `webroon_data` volume for `/data/roonstate.json`, and run the container:
 
-**Linux / macOS (Bash):**
+**Linux / macOS (Bash `.sh`):**
 ```bash
-# Auto-detect podman or docker (or pass 'podman' or 'docker' explicitly)
-./deploy/deploy-container.sh podman
-# or
-./deploy/deploy-container.sh docker
+# Deploy to Podman:
+./deploy/deploy-podman.sh
+
+# Deploy to Docker:
+./deploy/deploy-docker.sh
+
+# Or auto-detect Podman/Docker:
+./deploy/deploy-container.sh
 ```
 
-**Windows / PowerShell:**
+**Windows / Cross-Platform (PowerShell `.ps1`):**
 ```powershell
-.\deploy\deploy-container.ps1 -Engine podman
-# or
-.\deploy\deploy-container.ps1 -Engine docker
+# Deploy to Podman:
+.\deploy\deploy-podman.ps1
+
+# Deploy to Docker:
+.\deploy\deploy-docker.ps1
+
+# Or auto-detect Podman/Docker:
+.\deploy\deploy-container.ps1
 ```
 
 **Docker Compose / Podman Compose:**
