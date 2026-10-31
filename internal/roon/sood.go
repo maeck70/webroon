@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,11 +28,11 @@ type SoodMessage struct {
 
 // SoodDiscoverer handles UDP multicast/broadcast discovery for Roon Cores on the LAN.
 type SoodDiscoverer struct {
-	mu       sync.Mutex
-	running  bool
-	stopCh   chan struct{}
-	conns    []*net.UDPConn
-	onCore   func(msg SoodMessage)
+	mu      sync.Mutex
+	running bool
+	stopCh  chan struct{}
+	conns   []*net.UDPConn
+	onCore  func(msg SoodMessage)
 }
 
 func NewSoodDiscoverer(onCore func(msg SoodMessage)) *SoodDiscoverer {
@@ -50,11 +51,11 @@ func (s *SoodDiscoverer) Start() {
 	s.stopCh = make(chan struct{})
 	s.mu.Unlock()
 
-	s.initSockets()
-	s.SendQuery()
-
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
+		s.initSockets()
+		s.SendQuery()
+
+		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -81,6 +82,17 @@ func (s *SoodDiscoverer) Stop() {
 	s.conns = nil
 }
 
+func isVirtualInterface(name string) bool {
+	n := strings.ToLower(name)
+	prefixes := []string{"cali", "veth", "docker", "flannel", "cni", "br-", "virbr", "tunl", "vxlan", "kube", "lo"}
+	for _, p := range prefixes {
+		if strings.HasPrefix(n, p) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *SoodDiscoverer) initSockets() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -91,7 +103,7 @@ func (s *SoodDiscoverer) initSockets() {
 		go s.readLoop(conn)
 	}
 
-	// 2. Bind per-interface sockets and multicast listener on port 9003
+	// 2. Bind per-LAN-interface sockets and multicast listener on port 9003
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return
@@ -99,7 +111,7 @@ func (s *SoodDiscoverer) initSockets() {
 
 	mcastAddr := &net.UDPAddr{IP: net.ParseIP(soodMulticastIP), Port: soodPort}
 	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || isVirtualInterface(iface.Name) {
 			continue
 		}
 		if iface.Flags&net.FlagMulticast != 0 {
@@ -119,7 +131,7 @@ func (s *SoodDiscoverer) initSockets() {
 				continue
 			}
 			ip4 := ipNet.IP.To4()
-			if ip4 == nil || ip4.IsLoopback() {
+			if ip4 == nil || ip4.IsLoopback() || ip4.IsLinkLocalUnicast() {
 				continue
 			}
 			if uconn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: ip4, Port: 0}); err == nil {
@@ -138,18 +150,19 @@ func (s *SoodDiscoverer) SendQuery() {
 
 	mcastAddr := &net.UDPAddr{IP: net.ParseIP(soodMulticastIP), Port: soodPort}
 	bcastGlobal := &net.UDPAddr{IP: net.IPv4bcast, Port: soodPort}
+	loopbackAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: soodPort}
 
-	// Collect subnet broadcast addresses
+	// Collect physical LAN subnet broadcast addresses
 	var bcastAddrs []*net.UDPAddr
 	if ifaces, err := net.Interfaces(); err == nil {
 		for _, iface := range ifaces {
-			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || isVirtualInterface(iface.Name) {
 				continue
 			}
 			addrs, _ := iface.Addrs()
 			for _, addr := range addrs {
 				if ipNet, ok := addr.(*net.IPNet); ok {
-					if ip4 := ipNet.IP.To4(); ip4 != nil && len(ipNet.Mask) == 4 {
+					if ip4 := ipNet.IP.To4(); ip4 != nil && !ip4.IsLinkLocalUnicast() && len(ipNet.Mask) == 4 {
 						bcast := make(net.IP, 4)
 						for i := 0; i < 4; i++ {
 							bcast[i] = ip4[i] | (^ipNet.Mask[i])
@@ -168,6 +181,7 @@ func (s *SoodDiscoverer) SendQuery() {
 	for _, c := range conns {
 		_, _ = c.WriteToUDP(pkt, mcastAddr)
 		_, _ = c.WriteToUDP(pkt, bcastGlobal)
+		_, _ = c.WriteToUDP(pkt, loopbackAddr)
 		for _, baddr := range bcastAddrs {
 			_, _ = c.WriteToUDP(pkt, baddr)
 		}
@@ -182,7 +196,7 @@ func (s *SoodDiscoverer) readLoop(conn *net.UDPConn) {
 			return
 		}
 		msg := parseSoodPacket(buf[:n], raddr)
-		if msg == nil {
+		if msg == nil || msg.Type == "Q" {
 			continue
 		}
 		if msg.Props["service_id"] == RoonServiceID && msg.Props["unique_id"] != "" && msg.Props["http_port"] != "" {
@@ -268,8 +282,10 @@ func parseSoodPacket(data []byte, raddr *net.UDPAddr) *SoodMessage {
 		msg.FromPort = replyPort
 		delete(msg.Props, "_replyport")
 	}
-	log.Printf("[SOOD] Discovered packet from %s: type=%s service=%s name=%s port=%s",
-		msg.FromIP, msg.Type, msg.Props["service_id"], msg.Props["display_name"], msg.Props["http_port"])
+	if msg.Type != "Q" {
+		log.Printf("[SOOD] Discovered packet from %s: type=%s service=%s name=%s port=%s",
+			msg.FromIP, msg.Type, msg.Props["service_id"], msg.Props["display_name"], msg.Props["http_port"])
+	}
 	return msg
 }
 

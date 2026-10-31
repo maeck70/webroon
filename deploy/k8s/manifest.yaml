@@ -39,36 +39,35 @@ spec:
         app.kubernetes.io/name: webroon
     spec:
       # hostNetwork is required so SOOD UDP multicast/broadcast discovery (239.255.90.90:9003)
-      # can reach the Roon Core on the local LAN subnet.
+      # can reach the Roon Core on the local LAN subnet (192.168.10.10).
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
+      imagePullSecrets:
+        - name: acr-secret
       containers:
         - name: webroon
-          image: ghcr.io/maeck70/webroon:latest
-          imagePullPolicy: IfNotPresent
+          image: jombieparty.azurecr.io/webroon:v3
+          imagePullPolicy: Always
           env:
             - name: PORT
-              value: "8080"
+              value: "8088"
             - name: ROON_STATE_FILE
               value: "/data/roonstate.json"
           ports:
             - name: http
-              containerPort: 8080
+              containerPort: 8088
               protocol: TCP
-            - name: sood-udp
-              containerPort: 9003
-              protocol: UDP
           readinessProbe:
             httpGet:
               path: /ui/status-badge
               port: http
-            initialDelaySeconds: 3
-            periodSeconds: 10
+            initialDelaySeconds: 2
+            periodSeconds: 5
           livenessProbe:
             httpGet:
               path: /ui/status-badge
               port: http
-            initialDelaySeconds: 10
+            initialDelaySeconds: 5
             periodSeconds: 20
           resources:
             requests:
@@ -92,12 +91,35 @@ metadata:
   namespace: webroon
   labels:
     app.kubernetes.io/name: webroon
+  annotations:
+    metallb.universe.tf/allow-shared-ip: "shared-vip-180"
 spec:
-  type: ClusterIP
+  type: LoadBalancer
+  loadBalancerIP: 192.168.10.10
   selector:
     app.kubernetes.io/name: webroon
   ports:
     - name: http
-      port: 8080
+      port: 80
       targetPort: http
       protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: webroon-ingress
+  namespace: webroon
+  labels:
+    app.kubernetes.io/name: webroon
+spec:
+  rules:
+    - host: roon.home.arpa
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: webroon
+                port:
+                  number: 80
