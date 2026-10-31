@@ -27,7 +27,11 @@ It communicates natively with your Roon Core using Roon's **SOOD** (UDP multicas
 │   ├── roon/
 │   │   ├── sood.go              # UDP 9003 SOOD LAN discovery
 │   │   ├── moo.go               # WebSocket MOO/1 framing & subscriptions
-│   │   ├── client.go            # Roon Core registration, browse, search, transport & image proxy
+│   │   ├── client.go            # Client lifecycle, event pub/sub & state persistence
+│   │   ├── pairing.go           # Roon Core handshake, registration & pairing service
+│   │   ├── transport.go         # Zone/Queue subscriptions, playback & volume controls
+│   │   ├── browse.go            # Catalog navigation & global search (Library + TIDAL/Qobuz)
+│   │   ├── image.go             # Artwork fetching via Core HTTP & MOO image service
 │   │   └── types.go             # Roon API data models
 │   ├── server/
 │   │   └── server.go            # HTTP routes, HTMX partial handlers, image cache & SSE stream
