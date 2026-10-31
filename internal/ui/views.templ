@@ -1,0 +1,992 @@
+package ui
+
+import (
+	"fmt"
+	"net/url"
+	"strconv"
+	"webroon/internal/roon"
+)
+
+templ Layout(state PageState) {
+	<!DOCTYPE html>
+	<html lang="en" class="dark">
+	<head>
+		<meta charset="UTF-8"/>
+		<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+		<title>WebRoon — Roon Remote Controller</title>
+		<script src="https://unpkg.com/htmx.org@1.9.12"></script>
+		<link rel="stylesheet" href="/static/styles.css"/>
+	</head>
+	<body class="app-shell">
+		<div class="app-body">
+			<!-- Left Navigation Sidebar -->
+			<aside class="sidebar">
+				<div class="brand">
+					<div class="brand-logo">
+						<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+							<path d="M2 12h2m4-7v14m4-10v6m4-11v16m4-9v2"/>
+						</svg>
+					</div>
+					<div>
+						<div class="brand-title">WebRoon</div>
+						<div id="connection-badge" hx-get="/ui/status-badge" hx-trigger="roonStatusChanged from:body" hx-swap="innerHTML">
+							@StatusBadge(state.Status, state.Core)
+						</div>
+					</div>
+				</div>
+
+				<div class="nav-section-label">BROWSE CATALOG</div>
+				<nav class="sidebar-nav" id="sidebar-nav">
+					@SidebarLink("browse", "Explore & Streaming", state.ActiveHierarchy, state.ActiveTab, "compass")
+					@SidebarLink("albums", "Albums", state.ActiveHierarchy, state.ActiveTab, "disc")
+					@SidebarLink("artists", "Artists", state.ActiveHierarchy, state.ActiveTab, "users")
+					@SidebarLink("playlists", "Playlists", state.ActiveHierarchy, state.ActiveTab, "list")
+					@SidebarLink("genres", "Genres", state.ActiveHierarchy, state.ActiveTab, "tag")
+					@SidebarLink("composers", "Composers", state.ActiveHierarchy, state.ActiveTab, "feather")
+					@SidebarLink("internet_radio", "Live Radio", state.ActiveHierarchy, state.ActiveTab, "radio")
+				</nav>
+
+				<div class="nav-section-label">PLAYBACK</div>
+				<nav class="sidebar-nav">
+					<button
+						type="button"
+						class={ "nav-item", templ.KV("active", state.ActiveTab == "queue") }
+						hx-get="/ui/queue"
+						hx-target="#main-content"
+						hx-swap="innerHTML"
+						onclick="setActiveNav(this)"
+					>
+						<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+							<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+							<line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+						</svg>
+						<span>Queue &amp; Now Playing</span>
+					</button>
+				</nav>
+			</aside>
+
+			<!-- Center Main Column -->
+			<div class="main-column">
+				<!-- Top Header with Global Search across Library + Tidal/Qobuz -->
+				<header class="topbar">
+					<form
+						class="search-form"
+						hx-post="/ui/search"
+						hx-target="#main-content"
+						hx-swap="innerHTML"
+						hx-indicator="#search-spinner"
+					>
+						<svg class="search-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+							<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+						</svg>
+						<input
+							type="search"
+							name="q"
+							value={ state.SearchQuery }
+							placeholder="Global search across Library, TIDAL &amp; Qobuz (Artists, Albums, Tracks, Composers)..."
+							class="search-input"
+							autocomplete="off"
+						/>
+						<div id="search-spinner" class="htmx-indicator spinner"></div>
+						<button type="submit" class="btn btn-primary btn-sm">Search</button>
+					</form>
+				</header>
+
+				<!-- Dynamic Main Content Container -->
+				<main
+					id="main-content"
+					class="main-content"
+					hx-get="/ui/main-on-status"
+					hx-trigger="roonCorePaired from:body"
+					hx-swap="innerHTML"
+				>
+					@MainContent(state)
+				</main>
+			</div>
+		</div>
+
+		<!-- Bottom Transport & Zone Bar -->
+		<footer
+			id="now-playing-bar"
+			class="now-playing-bar"
+			hx-get="/ui/now-playing"
+			hx-trigger="roonZonesChanged from:body"
+			hx-swap="innerHTML"
+		>
+			@NowPlayingBar(state)
+		</footer>
+
+		<script>
+			function setActiveNav(el) {
+				document.querySelectorAll('.sidebar-nav .nav-item').forEach(btn => btn.classList.remove('active'));
+				el.classList.add('active');
+			}
+
+			function formatTime(sec) {
+				sec = Math.max(0, Math.floor(sec || 0));
+				const h = Math.floor(sec / 3600);
+				const m = Math.floor((sec % 3600) / 60);
+				const s = sec % 60;
+				const sStr = s < 10 ? '0' + s : '' + s;
+				if (h > 0) {
+					const mStr = m < 10 ? '0' + m : '' + m;
+					return h + ':' + mStr + ':' + sStr;
+				}
+				return m + ':' + sStr;
+			}
+
+			// Connect to SSE stream for live Roon updates
+			(function connectSSE() {
+				const evtSource = new EventSource('/api/events');
+				let lastStatus = document.body.dataset.roonStatus || '';
+
+				evtSource.addEventListener('status', function(e) {
+					const data = JSON.parse(e.data || '{}');
+					htmx.trigger(document.body, 'roonStatusChanged');
+					if (data.status !== lastStatus) {
+						lastStatus = data.status;
+						htmx.trigger(document.body, 'roonCorePaired');
+						htmx.trigger(document.body, 'roonZonesChanged');
+					}
+				});
+
+				evtSource.addEventListener('zones', function(e) {
+					// Avoid overwriting volume popover if user is actively dragging a slider
+					if (document.activeElement && document.activeElement.classList.contains('live-slider')) {
+						return;
+					}
+					htmx.trigger(document.body, 'roonZonesChanged');
+					if (document.getElementById('queue-view-container')) {
+						htmx.trigger(document.body, 'roonQueueChanged');
+					}
+				});
+
+				evtSource.addEventListener('seek', function(e) {
+					const data = JSON.parse(e.data || '{}');
+					const seekSlider = document.getElementById('seek-slider');
+					const seekCur = document.getElementById('seek-current-time');
+					if (seekSlider && document.activeElement !== seekSlider) {
+						seekSlider.value = data.seek_position || 0;
+						const max = parseFloat(seekSlider.max) || 1;
+						const pct = Math.min(100, Math.max(0, ((data.seek_position || 0) / max) * 100));
+						seekSlider.style.setProperty('--seek-pct', pct + '%');
+					}
+					if (seekCur) {
+						seekCur.textContent = formatTime(data.seek_position || 0);
+					}
+				});
+
+				evtSource.addEventListener('queue', function(e) {
+					if (document.getElementById('queue-view-container')) {
+						htmx.trigger(document.body, 'roonQueueChanged');
+					}
+				});
+
+				evtSource.onerror = function() {
+					evtSource.close();
+					setTimeout(connectSSE, 3000);
+				};
+			})();
+		</script>
+	</body>
+	</html>
+}
+
+templ SidebarLink(hierarchy, label, activeHierarchy, activeTab, icon string) {
+	<button
+		type="button"
+		class={ "nav-item", templ.KV("active", activeTab == "browse" && activeHierarchy == hierarchy) }
+		hx-get={ fmt.Sprintf("/ui/browse?hierarchy=%s&pop_all=1", url.QueryEscape(hierarchy)) }
+		hx-target="#main-content"
+		hx-swap="innerHTML"
+		onclick="setActiveNav(this)"
+	>
+		@NavIcon(icon)
+		<span>{ label }</span>
+	</button>
+}
+
+templ NavIcon(icon string) {
+	switch icon {
+	case "compass":
+		<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+			<circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>
+		</svg>
+	case "disc":
+		<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+			<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
+		</svg>
+	case "users":
+		<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+			<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+		</svg>
+	case "list":
+		<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+			<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+		</svg>
+	case "tag":
+		<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+			<path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>
+		</svg>
+	case "feather":
+		<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+			<path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/><line x1="16" y1="8" x2="2" y2="22"/><line x1="17.5" y1="15" x2="9" y2="15"/>
+		</svg>
+	default:
+		<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+			<circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/>
+		</svg>
+	}
+}
+
+templ StatusBadge(status roon.ConnectionStatus, core *roon.CoreInfo) {
+	switch status {
+	case roon.StatusConnected:
+		<div class="status-pill status-connected">
+			<span class="status-dot"></span>
+			if core != nil {
+				<span>{ core.DisplayName }</span>
+			} else {
+				<span>Connected</span>
+			}
+		</div>
+	case roon.StatusWaitingPermission:
+		<div class="status-pill status-waiting">
+			<span class="status-dot"></span>
+			<span>Authorize in Roon</span>
+		</div>
+	default:
+		<div class="status-pill status-discovering">
+			<span class="status-dot"></span>
+			<span>Scanning LAN...</span>
+		</div>
+	}
+}
+
+templ MainContent(state PageState) {
+	if state.Status == roon.StatusDiscovering {
+		<div class="empty-hero">
+			<div class="radar-pulse">
+				<svg viewBox="0 0 24 24" width="44" height="44" fill="none" stroke="currentColor" stroke-width="1.5">
+					<circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/>
+				</svg>
+			</div>
+			<h2>Searching for Roon Core on Local Network...</h2>
+			<p class="muted-text">
+				Broadcasting SOOD discovery queries over UDP port <code>9003</code> (multicast <code>239.255.90.90</code>).
+				Ensure your Roon Server is running on the same subnet and UDP 9003 is permitted by Windows Firewall.
+			</p>
+			<button
+				type="button"
+				class="btn btn-secondary"
+				hx-post="/ui/rescan"
+				hx-target="#main-content"
+				hx-swap="innerHTML"
+			>
+				Rescan Network Now
+			</button>
+		</div>
+	} else if state.Status == roon.StatusWaitingPermission {
+		<div class="empty-hero">
+			<div class="radar-pulse warning">
+				<svg viewBox="0 0 24 24" width="44" height="44" fill="none" stroke="currentColor" stroke-width="1.5">
+					<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+				</svg>
+			</div>
+			<h2>Authorization Required in Roon</h2>
+			if state.Core != nil {
+				<p class="hero-subtitle">Found Roon Core: <strong>{ state.Core.DisplayName }</strong> ({ state.Core.Host }:{ state.Core.Port })</p>
+			}
+			<p class="muted-text">
+				Open your Roon app and navigate to <strong>Settings &rarr; Extensions</strong>, then click <strong>Enable</strong> next to <strong>WebRoon Web Controller</strong>.
+				This screen will update automatically as soon as enabled.
+			</p>
+		</div>
+	} else if state.ActiveTab == "queue" {
+		@QueueView(state)
+	} else {
+		@BrowseView(state)
+	}
+}
+
+templ BrowseView(state PageState) {
+	<div class="browse-container">
+		if state.FlashMessage != "" {
+			<div class={ "flash-banner", templ.KV("flash-error", state.FlashIsError) }>
+				<span>{ state.FlashMessage }</span>
+			</div>
+		}
+
+		<!-- Browse Toolbar & List Header -->
+		<div class="browse-header">
+			<div class="browse-nav-controls">
+				if state.BrowseList != nil && state.BrowseList.Level > 0 {
+					<button
+						type="button"
+						class="btn btn-icon-text"
+						hx-get={ fmt.Sprintf("/ui/browse?hierarchy=%s&pop_levels=1", url.QueryEscape(state.ActiveHierarchy)) }
+						hx-target="#main-content"
+						hx-swap="innerHTML"
+					>
+						<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+							<polyline points="15 18 9 12 15 6"/>
+						</svg>
+						<span>Back</span>
+					</button>
+					<button
+						type="button"
+						class="btn btn-icon-text"
+						hx-get={ fmt.Sprintf("/ui/browse?hierarchy=%s&pop_all=1", url.QueryEscape(state.ActiveHierarchy)) }
+						hx-target="#main-content"
+						hx-swap="innerHTML"
+						title="Return to root level"
+					>
+						<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+							<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+						</svg>
+						<span>Top</span>
+					</button>
+				}
+				<button
+					type="button"
+					class="btn btn-icon-text"
+					hx-get={ fmt.Sprintf("/ui/browse?hierarchy=%s&refresh=1&offset=%d", url.QueryEscape(state.ActiveHierarchy), state.BrowseOffset) }
+					hx-target="#main-content"
+					hx-swap="innerHTML"
+					title="Refresh current view"
+				>
+					<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+						<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+					</svg>
+					<span>Refresh</span>
+				</button>
+			</div>
+
+			if state.BrowseList != nil {
+				<div class="browse-hero">
+					if state.BrowseList.ImageKey != "" {
+						<img
+							src={ ImageURL(state.BrowseList.ImageKey, 240) }
+							alt={ state.BrowseList.Title }
+							class="browse-hero-art"
+							loading="lazy"
+						/>
+					}
+					<div class="browse-hero-meta">
+						<div class="browse-level-tag">
+							{ state.ActiveHierarchy } &bull; Level { strconv.Itoa(state.BrowseList.Level) }
+							if state.BrowseList.Count > 0 {
+								<span> &bull; { strconv.Itoa(state.BrowseList.Count) } items</span>
+							}
+						</div>
+						<h1 class="browse-title">{ state.BrowseList.Title }</h1>
+						if state.BrowseList.Subtitle != "" {
+							<p class="browse-subtitle">{ state.BrowseList.Subtitle }</p>
+						}
+					</div>
+				</div>
+			}
+		</div>
+
+		<!-- Items List or Card Grid -->
+		if len(state.BrowseItems) == 0 {
+			<div class="empty-state">
+				<p class="muted-text">No items in this view.</p>
+			</div>
+		} else if ShouldRenderGrid(state.ActiveHierarchy, state.BrowseList, state.BrowseItems) {
+			<div class="catalog-grid">
+				for _, item := range state.BrowseItems {
+					@CatalogGridCard(state.ActiveHierarchy, item)
+				}
+			</div>
+		} else {
+			<div class="catalog-list">
+				for _, item := range state.BrowseItems {
+					@CatalogListRow(state.ActiveHierarchy, item)
+				}
+			</div>
+		}
+
+		<!-- Pagination Controls -->
+		if state.BrowseList != nil && state.BrowseList.Count > 100 {
+			<div class="pagination-bar">
+				if state.BrowseOffset >= 100 {
+					<button
+						type="button"
+						class="btn btn-secondary"
+						hx-get={ fmt.Sprintf("/ui/browse?hierarchy=%s&offset=%d", url.QueryEscape(state.ActiveHierarchy), state.BrowseOffset-100) }
+						hx-target="#main-content"
+						hx-swap="innerHTML"
+					>
+						&larr; Previous 100
+					</button>
+				}
+				<span class="pagination-info">
+					Showing { strconv.Itoa(state.BrowseOffset + 1) } &ndash; { strconv.Itoa(minInt(state.BrowseOffset+len(state.BrowseItems), state.BrowseList.Count)) } of { strconv.Itoa(state.BrowseList.Count) }
+				</span>
+				if state.BrowseOffset+100 < state.BrowseList.Count {
+					<button
+						type="button"
+						class="btn btn-secondary"
+						hx-get={ fmt.Sprintf("/ui/browse?hierarchy=%s&offset=%d", url.QueryEscape(state.ActiveHierarchy), state.BrowseOffset+100) }
+						hx-target="#main-content"
+						hx-swap="innerHTML"
+					>
+						Next 100 &rarr;
+					</button>
+				}
+			</div>
+		}
+	</div>
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+templ CatalogGridCard(hierarchy string, item roon.BrowseItem) {
+	if item.InputPrompt != nil {
+		<div class="catalog-card input-card">
+			<form
+				hx-post="/ui/browse/input"
+				hx-target="#main-content"
+				hx-swap="innerHTML"
+				class="inline-prompt-form"
+			>
+				<input type="hidden" name="hierarchy" value={ hierarchy }/>
+				<input type="hidden" name="item_key" value={ item.ItemKey }/>
+				<label class="prompt-label">{ item.Title }</label>
+				<div class="prompt-row">
+					<input
+						type="text"
+						name="input"
+						placeholder={ item.InputPrompt.Prompt }
+						value={ item.InputPrompt.Value }
+						class="search-input"
+					/>
+					<button type="submit" class="btn btn-primary btn-sm">{ item.InputPrompt.Action }</button>
+				</div>
+			</form>
+		</div>
+	} else {
+		<button
+			type="button"
+			class="catalog-card"
+			if item.ItemKey != "" {
+				hx-get={ fmt.Sprintf("/ui/browse?hierarchy=%s&item_key=%s", url.QueryEscape(hierarchy), url.QueryEscape(item.ItemKey)) }
+				hx-target="#main-content"
+				hx-swap="innerHTML"
+			}
+		>
+			<div class="card-artwork-wrap">
+				if item.ImageKey != "" {
+					<img
+						src={ ImageURL(item.ImageKey, 320) }
+						alt={ item.Title }
+						class="card-artwork"
+						loading="lazy"
+					/>
+				} else {
+					<div class="card-artwork-placeholder">
+						<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5">
+							<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
+						</svg>
+					</div>
+				}
+				<div class="card-hover-overlay">
+					if IsPlayableAction(item) {
+						<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor">
+							<polygon points="5 3 19 12 5 21 5 3"/>
+						</svg>
+					} else {
+						<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+							<polyline points="9 18 15 12 9 6"/>
+						</svg>
+					}
+				</div>
+			</div>
+			<div class="card-meta">
+				<div class="card-title" title={ item.Title }>{ item.Title }</div>
+				if item.Subtitle != "" {
+					<div class="card-subtitle" title={ item.Subtitle }>{ item.Subtitle }</div>
+				}
+			</div>
+		</button>
+	}
+}
+
+templ CatalogListRow(hierarchy string, item roon.BrowseItem) {
+	if item.Hint == "header" {
+		<div class="list-section-header">
+			<span>{ item.Title }</span>
+			if item.Subtitle != "" {
+				<span class="list-header-sub">{ item.Subtitle }</span>
+			}
+		</div>
+	} else if item.InputPrompt != nil {
+		<div class="list-row prompt-list-row">
+			<form
+				hx-post="/ui/browse/input"
+				hx-target="#main-content"
+				hx-swap="innerHTML"
+				class="inline-prompt-form"
+			>
+				<input type="hidden" name="hierarchy" value={ hierarchy }/>
+				<input type="hidden" name="item_key" value={ item.ItemKey }/>
+				<div class="prompt-row">
+					<input
+						type="text"
+						name="input"
+						placeholder={ item.InputPrompt.Prompt }
+						value={ item.InputPrompt.Value }
+						class="search-input"
+					/>
+					<button type="submit" class="btn btn-primary btn-sm">{ item.InputPrompt.Action }</button>
+				</div>
+			</form>
+		</div>
+	} else {
+		<button
+			type="button"
+			class={ "list-row", templ.KV("list-row-action", item.Hint == "action" || item.Hint == "action_list"), templ.KV("list-row-playable", IsPlayableAction(item)) }
+			if item.ItemKey != "" {
+				hx-get={ fmt.Sprintf("/ui/browse?hierarchy=%s&item_key=%s", url.QueryEscape(hierarchy), url.QueryEscape(item.ItemKey)) }
+				hx-target="#main-content"
+				hx-swap="innerHTML"
+			} else {
+				disabled
+			}
+		>
+			if item.ImageKey != "" {
+				<img
+					src={ ImageURL(item.ImageKey, 120) }
+					alt={ item.Title }
+					class="list-row-art"
+					loading="lazy"
+				/>
+			} else if IsPlayableAction(item) {
+				<div class="list-row-icon play-badge">
+					<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+						<polygon points="5 3 19 12 5 21 5 3"/>
+					</svg>
+				</div>
+			} else {
+				<div class="list-row-icon">
+					<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+						<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2"/>
+					</svg>
+				</div>
+			}
+
+			<div class="list-row-text">
+				<div class="list-row-title">{ item.Title }</div>
+				if item.Subtitle != "" {
+					<div class="list-row-subtitle">{ item.Subtitle }</div>
+				}
+			</div>
+
+			<div class="list-row-chevron">
+				if item.Hint == "action" {
+					<span class="badge-action">Action</span>
+				} else if item.Hint == "action_list" {
+					<span class="badge-action">Actions &hellip;</span>
+				} else if item.ItemKey != "" {
+					<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+						<polyline points="9 18 15 12 9 6"/>
+					</svg>
+				}
+			</div>
+		</button>
+	}
+}
+
+templ QueueView(state PageState) {
+	<div
+		id="queue-view-container"
+		class="queue-split-layout"
+		hx-get="/ui/queue"
+		hx-trigger="roonQueueChanged from:body"
+		hx-swap="outerHTML"
+	>
+		<!-- Left: Large Now Playing Stage -->
+		<div class="now-playing-stage">
+			if state.CurrentZone != nil && state.CurrentZone.NowPlaying != nil {
+				<div class="stage-art-frame">
+					if state.CurrentZone.NowPlaying.ImageKey != "" {
+						<img
+							src={ ImageURL(state.CurrentZone.NowPlaying.ImageKey, 600) }
+							alt={ state.CurrentZone.NowPlaying.ThreeLine.Line1 }
+							class="stage-art"
+						/>
+					} else {
+						<div class="stage-art-placeholder">
+							<svg viewBox="0 0 24 24" width="72" height="72" fill="none" stroke="currentColor" stroke-width="1.2">
+								<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
+							</svg>
+						</div>
+					}
+				</div>
+				<div class="stage-meta">
+					<span class="stage-zone-badge">{ state.CurrentZone.DisplayName } &bull; { state.CurrentZone.State }</span>
+					<h1 class="stage-track-title">{ state.CurrentZone.NowPlaying.ThreeLine.Line1 }</h1>
+					if state.CurrentZone.NowPlaying.ThreeLine.Line2 != "" {
+						<div class="stage-track-artist">{ state.CurrentZone.NowPlaying.ThreeLine.Line2 }</div>
+					}
+					if state.CurrentZone.NowPlaying.ThreeLine.Line3 != "" {
+						<div class="stage-track-album">{ state.CurrentZone.NowPlaying.ThreeLine.Line3 }</div>
+					}
+				</div>
+			} else {
+				<div class="empty-state">
+					<h3>Nothing Currently Playing</h3>
+					<p class="muted-text">Select music from the Catalog or Search bar to begin playback.</p>
+				</div>
+			}
+		</div>
+
+		<!-- Right: Playback Queue -->
+		<div class="queue-panel">
+			<div class="queue-panel-header">
+				<div>
+					<h2>Playback Queue</h2>
+					if state.CurrentZone != nil {
+						<p class="muted-text">
+							Zone: <strong>{ state.CurrentZone.DisplayName }</strong>
+							if state.CurrentZone.QueueItemsRemaining > 0 {
+								<span> &bull; { strconv.Itoa(state.CurrentZone.QueueItemsRemaining) } tracks remaining ({ FormatSeconds(state.CurrentZone.QueueTimeRemaining) })</span>
+							}
+						</p>
+					}
+				</div>
+			</div>
+
+			if len(state.QueueItems) == 0 {
+				<div class="empty-state">
+					<p class="muted-text">Queue is empty for this zone.</p>
+				</div>
+			} else {
+				<div class="queue-list">
+					for _, qitem := range state.QueueItems {
+						<button
+							type="button"
+							class="list-row queue-row"
+							hx-post="/ui/transport/play-from-here"
+							hx-vals={ fmt.Sprintf(`{"zone_id":%q,"queue_item_id":%d}`, state.CurrentZoneID, qitem.QueueItemID) }
+							hx-swap="none"
+						>
+							if qitem.ImageKey != "" {
+								<img
+									src={ ImageURL(qitem.ImageKey, 100) }
+									alt={ qitem.ThreeLine.Line1 }
+									class="list-row-art"
+									loading="lazy"
+								/>
+							} else {
+								<div class="list-row-icon">
+									<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+										<polygon points="5 3 19 12 5 21 5 3"/>
+									</svg>
+								</div>
+							}
+							<div class="list-row-text">
+								<div class="list-row-title">{ qitem.ThreeLine.Line1 }</div>
+								<div class="list-row-subtitle">
+									{ qitem.ThreeLine.Line2 }
+									if qitem.ThreeLine.Line3 != "" {
+										<span> &bull; { qitem.ThreeLine.Line3 }</span>
+									}
+								</div>
+							</div>
+							if qitem.Length > 0 {
+								<div class="queue-duration">{ FormatSeconds(qitem.Length) }</div>
+							}
+						</button>
+					}
+				</div>
+			}
+		</div>
+	</div>
+}
+
+templ NowPlayingBar(state PageState) {
+	<!-- Left: Track Info -->
+	<div class="np-track">
+		if state.CurrentZone != nil && state.CurrentZone.NowPlaying != nil {
+			<button
+				type="button"
+				class="np-art-btn"
+				hx-get="/ui/queue"
+				hx-target="#main-content"
+				hx-swap="innerHTML"
+				title="Open Now Playing &amp; Queue"
+			>
+				if state.CurrentZone.NowPlaying.ImageKey != "" {
+					<img
+						src={ ImageURL(state.CurrentZone.NowPlaying.ImageKey, 120) }
+						alt={ state.CurrentZone.NowPlaying.ThreeLine.Line1 }
+						class="np-art"
+					/>
+				} else {
+					<div class="np-art-placeholder">
+						<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+							<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2"/>
+						</svg>
+					</div>
+				}
+			</button>
+			<div class="np-meta">
+				<div class="np-title" title={ state.CurrentZone.NowPlaying.ThreeLine.Line1 }>
+					{ state.CurrentZone.NowPlaying.ThreeLine.Line1 }
+				</div>
+				<div class="np-artist" title={ state.CurrentZone.NowPlaying.ThreeLine.Line2 }>
+					{ state.CurrentZone.NowPlaying.ThreeLine.Line2 }
+					if state.CurrentZone.NowPlaying.ThreeLine.Line3 != "" {
+						<span class="np-album"> &mdash; { state.CurrentZone.NowPlaying.ThreeLine.Line3 }</span>
+					}
+				</div>
+			</div>
+		} else {
+			<div class="np-art-placeholder">
+				<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8">
+					<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2"/>
+				</svg>
+			</div>
+			<div class="np-meta">
+				<div class="np-title muted-text">No Active Playback</div>
+				if state.CurrentZone != nil {
+					<div class="np-artist">{ state.CurrentZone.DisplayName }</div>
+				} else {
+					<div class="np-artist">Select a Roon Zone</div>
+				}
+			</div>
+		}
+	</div>
+
+	<!-- Center: Transport Controls + Seek Slider -->
+	<div class="np-center">
+		<div class="transport-buttons">
+			<!-- Shuffle Toggle -->
+			if state.CurrentZone != nil && state.CurrentZone.Settings != nil {
+				<button
+					type="button"
+					class={ "transport-btn transport-btn-sm", templ.KV("active", state.CurrentZone.Settings.Shuffle) }
+					hx-post="/ui/transport/settings"
+					hx-vals={ fmt.Sprintf(`{"zone_id":%q,"setting":"shuffle","value":%t}`, state.CurrentZoneID, !state.CurrentZone.Settings.Shuffle) }
+					hx-target="#now-playing-bar"
+					hx-swap="innerHTML"
+					title="Toggle Shuffle"
+				>
+					<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+						<polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/>
+						<polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/>
+					</svg>
+				</button>
+			}
+
+			<!-- Previous -->
+			<button
+				type="button"
+				class="transport-btn"
+				hx-post="/ui/transport/control"
+				hx-vals={ fmt.Sprintf(`{"zone_id":%q,"control":"previous"}`, state.CurrentZoneID) }
+				hx-swap="none"
+				disabled?={ state.CurrentZone == nil || !state.CurrentZone.IsPreviousAllowed }
+				title="Previous Track"
+			>
+				<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+					<polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5" stroke="currentColor" stroke-width="2"/>
+				</svg>
+			</button>
+
+			<!-- Play / Pause -->
+			<button
+				type="button"
+				class="transport-btn transport-btn-play"
+				hx-post="/ui/transport/control"
+				hx-vals={ fmt.Sprintf(`{"zone_id":%q,"control":"playpause"}`, state.CurrentZoneID) }
+				hx-swap="none"
+				disabled?={ state.CurrentZone == nil || (!state.CurrentZone.IsPlayAllowed && !state.CurrentZone.IsPauseAllowed) }
+				title="Play / Pause"
+			>
+				if state.CurrentZone != nil && state.CurrentZone.State == "playing" {
+					<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+						<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
+					</svg>
+				} else {
+					<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+						<polygon points="5 3 19 12 5 21 5 3"/>
+					</svg>
+				}
+			</button>
+
+			<!-- Next -->
+			<button
+				type="button"
+				class="transport-btn"
+				hx-post="/ui/transport/control"
+				hx-vals={ fmt.Sprintf(`{"zone_id":%q,"control":"next"}`, state.CurrentZoneID) }
+				hx-swap="none"
+				disabled?={ state.CurrentZone == nil || !state.CurrentZone.IsNextAllowed }
+				title="Next Track"
+			>
+				<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+					<polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" stroke-width="2"/>
+				</svg>
+			</button>
+
+			<!-- Loop Toggle -->
+			if state.CurrentZone != nil && state.CurrentZone.Settings != nil {
+				<button
+					type="button"
+					class={ "transport-btn transport-btn-sm", templ.KV("active", state.CurrentZone.Settings.Loop != "disabled" && state.CurrentZone.Settings.Loop != "") }
+					hx-post="/ui/transport/settings"
+					hx-vals={ fmt.Sprintf(`{"zone_id":%q,"setting":"loop","value":"next"}`, state.CurrentZoneID) }
+					hx-target="#now-playing-bar"
+					hx-swap="innerHTML"
+					title={ "Loop: " + state.CurrentZone.Settings.Loop }
+				>
+					<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+						<polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+						<polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+					</svg>
+					if state.CurrentZone.Settings.Loop == "loop_one" {
+						<span class="loop-one-badge">1</span>
+					}
+				</button>
+			}
+		</div>
+
+		<!-- Seek Bar -->
+		<div class="seek-row">
+			<span id="seek-current-time" class="seek-time">
+				{ FormatSeconds(SeekValue(state.CurrentZone)) }
+			</span>
+			if state.CurrentZone != nil && state.CurrentZone.NowPlaying != nil && state.CurrentZone.NowPlaying.Length > 0 {
+				<input
+					id="seek-slider"
+					type="range"
+					class="seek-slider live-slider"
+					min="0"
+					max={ strconv.Itoa(state.CurrentZone.NowPlaying.Length) }
+					value={ strconv.Itoa(SeekValue(state.CurrentZone)) }
+					style={ fmt.Sprintf("--seek-pct: %.1f%%;", SeekPercent(state.CurrentZone)) }
+					name="seconds"
+					hx-post="/ui/transport/seek"
+					hx-vals={ fmt.Sprintf(`{"zone_id":%q}`, state.CurrentZoneID) }
+					hx-trigger="change"
+					hx-swap="none"
+					disabled?={ !state.CurrentZone.IsSeekAllowed }
+				/>
+				<span class="seek-time">{ FormatSeconds(state.CurrentZone.NowPlaying.Length) }</span>
+			} else {
+				<input type="range" class="seek-slider" min="0" max="100" value="0" disabled/>
+				<span class="seek-time">0:00</span>
+			}
+		</div>
+	</div>
+
+	<!-- Right: Zone Selector + Output Volume Controls -->
+	<div class="np-right">
+		if len(state.Zones) > 0 {
+			<div class="zone-selector-wrap">
+				<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+					<rect x="4" y="2" width="16" height="20" rx="2" ry="2"/><circle cx="12" cy="14" r="4"/><line x1="12" y1="6" x2="12.01" y2="6"/>
+				</svg>
+				<select
+					name="zone_id"
+					class="zone-select"
+					hx-post="/ui/zone/select"
+					hx-target="#now-playing-bar"
+					hx-swap="innerHTML"
+				>
+					for _, z := range state.Zones {
+						<option value={ z.ZoneID } selected?={ z.ZoneID == state.CurrentZoneID }>
+							{ z.DisplayName } ({ z.State })
+						</option>
+					}
+				</select>
+			</div>
+		}
+
+		if state.CurrentZone != nil && len(state.CurrentZone.Outputs) > 0 {
+			<div class="outputs-volume-list">
+				for _, out := range state.CurrentZone.Outputs {
+					if out.Volume != nil {
+						<div class="volume-control-item">
+							<button
+								type="button"
+								class={ "transport-btn transport-btn-sm", templ.KV("muted", out.Volume.IsMuted) }
+								hx-post="/ui/transport/mute"
+								hx-vals={ fmt.Sprintf(`{"output_id":%q,"how":%q}`, out.OutputID, muteToggleVerb(out.Volume.IsMuted)) }
+								hx-target="#now-playing-bar"
+								hx-swap="innerHTML"
+								title={ "Mute / Unmute " + out.DisplayName }
+							>
+								if out.Volume.IsMuted {
+									<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+										<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>
+									</svg>
+								} else {
+									<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+										<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+									</svg>
+								}
+							</button>
+
+							if out.Volume.Type == "incremental" {
+								<button
+									type="button"
+									class="btn btn-xs"
+									hx-post="/ui/transport/volume"
+									hx-vals={ fmt.Sprintf(`{"output_id":%q,"how":"relative","value":-1}`, out.OutputID) }
+									hx-swap="none"
+								>&minus;</button>
+								<button
+									type="button"
+									class="btn btn-xs"
+									hx-post="/ui/transport/volume"
+									hx-vals={ fmt.Sprintf(`{"output_id":%q,"how":"relative","value":1}`, out.OutputID) }
+									hx-swap="none"
+								>+</button>
+							} else {
+								<input
+									type="range"
+									class="volume-slider live-slider"
+									min={ fmt.Sprintf("%g", out.Volume.Min) }
+									max={ fmt.Sprintf("%g", out.Volume.Max) }
+									step={ fmt.Sprintf("%g", volumeStep(out.Volume.Step)) }
+									value={ fmt.Sprintf("%g", out.Volume.Value) }
+									name="value"
+									hx-post="/ui/transport/volume"
+									hx-vals={ fmt.Sprintf(`{"output_id":%q,"how":"absolute"}`, out.OutputID) }
+									hx-trigger="change"
+									hx-target="#now-playing-bar"
+									hx-swap="innerHTML"
+									title={ out.DisplayName + ": " + FormatVolume(out.Volume) }
+								/>
+								<span class="volume-val">{ FormatVolume(out.Volume) }</span>
+							}
+						</div>
+					}
+				}
+			</div>
+		}
+	</div>
+}
+
+func muteToggleVerb(isMuted bool) string {
+	if isMuted {
+		return "unmute"
+	}
+	return "mute"
+}
+
+func volumeStep(step float64) float64 {
+	if step <= 0 {
+		return 1
+	}
+	return step
+}
