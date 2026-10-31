@@ -7,7 +7,7 @@ roonstate.json
 *.dll
 *.so
 *.dylib
-webroon
+/webroon
 
 # Test binary, built with `go test -c`
 *.test
